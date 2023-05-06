@@ -689,6 +689,21 @@ var CanvasKit = {
     _beginRecording: function() {},
   },
 
+  SkWStream : {
+    _make: function() {},
+    prototype: {
+      _toBytes: function() {},
+      _delete: function() {},
+    }
+  },
+
+  SVGCanvas: {
+    Make: function() {},
+    _make: function() {},
+  },
+
+  MakeSVGCanvas : function() {},
+
   Shader: {
     // Deprecated names
     Blend: function() {},

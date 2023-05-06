@@ -56,6 +56,7 @@
 #include "include/private/SkShadowFlags.h"
 #include "include/utils/SkParsePath.h"
 #include "include/utils/SkShadowUtils.h"
+#include "include/svg/SkSVGCanvas.h"
 #include "src/core/SkPathPriv.h"
 #include "src/core/SkResourceCache.h"
 #include "src/image/SkImage_Base.h"
@@ -98,6 +99,12 @@
 #include "include/core/SkFontMetrics.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkFontTypes.h"
+
+#include "src/core/SkFontMgrPriv.h"
+#include "include/ports/SkRemotableFontMgr.h"
+#include "include/ports/SkFontMgr_indirect.h"
+#include "src/core/SkFontDescriptor.h"
+#include "src/ports/SkFontMgr_custom.h"
 #ifdef CK_INCLUDE_PARAGRAPH
 #include "modules/skparagraph/include/Paragraph.h"
 #endif // CK_INCLUDE_PARAGRAPH
@@ -112,6 +119,103 @@
 #endif
 
 #ifndef CK_NO_FONTS
+sk_sp<SkFontMgr> SkFontMgr_New_Custom_Data(sk_sp<SkData>* datas, int n);
+
+static SkFontStyleSet_Custom* find_family(SkFontMgr_Custom::Families& families,
+                                          const char familyName[])
+{
+   for (int i = 0; i < families.count(); ++i) {
+        if (families[i]->getFamilyName().equals(familyName)) {
+            return families[i].get();
+        }
+    }
+    return nullptr;
+}
+
+static void load_font_from_data(const SkTypeface_FreeType::Scanner& scanner,
+                                std::unique_ptr<SkMemoryStream> stream, int index,
+                                SkFontMgr_Custom::Families* families)
+{
+    int numFaces;
+    if (!scanner.recognizedFont(stream.get(), &numFaces)) {
+        SkDebugf("---- failed to open <%d> as a font\n", index);
+        return;
+    }
+
+    for (int faceIndex = 0; faceIndex < numFaces; ++faceIndex) {
+        bool isFixedPitch;
+        SkString realname;
+        SkFontStyle style = SkFontStyle(); // avoid uninitialized warning
+        if (!scanner.scanFont(stream.get(), faceIndex,
+                              &realname, &style, &isFixedPitch, nullptr))
+        {
+            SkDebugf("---- failed to open <%d> <%d> as a font\n", index, faceIndex);
+            return;
+        }
+
+        SkFontStyleSet_Custom* addTo = find_family(*families, realname.c_str());
+        if (nullptr == addTo) {
+            addTo = new SkFontStyleSet_Custom(realname);
+            families->push_back().reset(addTo);
+        }
+        auto data = std::make_unique<SkFontData>(stream->duplicate(), faceIndex, 0,
+                                                 nullptr, 0, nullptr, 0);
+        addTo->appendTypeface(sk_make_sp<SkTypeface_Stream>(std::move(data),
+                                                            style, isFixedPitch,
+                                                            true, realname));
+    }
+}
+
+class SkMyFontMgr : public SkFontMgr_Custom, public SkFontMgr_Custom::SystemFontLoader {
+
+public:
+
+    SkMyFontMgr() : SkFontMgr_Custom(*static_cast<SkFontMgr_Custom::SystemFontLoader*>(this)) {
+
+    }
+
+    void loadSystemFonts(const SkTypeface_FreeType::Scanner& scanner,
+                         SkFontMgr_Custom::Families* families) const override
+    {
+        this->pFamilies = families;
+        
+        SkFontStyleSet_Custom* family = new SkFontStyleSet_Custom(SkString());
+        families->push_back().reset(family);
+        family->appendTypeface(sk_make_sp<SkTypeface_Empty>());
+    }
+
+    sk_sp<SkTypeface> onMakeFromData(sk_sp<SkData> data, int ttcIndex) const override 
+    {
+        auto stream = std::make_unique<SkMemoryStream>(data);
+
+        load_font_from_data(fScanner, std::move(stream), 0, pFamilies);
+
+        return SkFontMgr_Custom::onMakeFromData(data, ttcIndex);
+    }
+
+    sk_sp<SkTypeface> onLegacyMakeTypeface(const char familyName[], SkFontStyle style) const override 
+    {
+        auto typeface = SkFontMgr_Custom::onLegacyMakeTypeface(familyName, style);
+
+        if (typeface->countGlyphs() <= 0) {
+            SkDebugf(
+                "No found typeface: %s, weight: %d, width: %d, slant: %d.\n", 
+                familyName, 
+                style.weight(),
+                style.width(),
+                style.slant()
+                );
+        }
+
+        return typeface;
+    }
+
+
+private:
+    SkTypeface_FreeType::Scanner fScanner;
+    mutable SkFontMgr_Custom::Families* pFamilies;
+};
+
 #include "include/ports/SkFontMgr_data.h"
 #endif
 
@@ -1044,6 +1148,27 @@ EMSCRIPTEN_BINDINGS(Skia) {
             return SkScalarFloorToInt(self.getBounds().width());
         }));
 
+    class_<SkWStream>("SkWStream")
+        .class_function("_make",  optional_override([]() -> SkWStream* {
+            auto wstream = new SkDynamicMemoryWStream();
+
+            return(SkWStream*)wstream;
+        }), allow_raw_pointers())
+        .function("_toBytes", optional_override([](SkWStream* self) -> Uint8Array {
+            auto wstream = reinterpret_cast<SkDynamicMemoryWStream*>(self);
+
+            sk_sp<SkData> data = wstream->detachAsData();
+
+            return toBytes(data);
+        }), allow_raw_pointers());
+
+    class_<SkSVGCanvas>("SVGCanvas")
+        .class_function("_make", optional_override([](WASMPointerF32 fPtr, SkWStream* wstream, uint32_t flags) -> SkCanvas* {
+            auto bounds = reinterpret_cast<SkRect*>(fPtr);
+
+            return (SkCanvas*)(SkSVGCanvas::Make(*bounds, wstream, flags).release());
+        }), allow_raw_pointers());
+
     class_<SkCanvas>("Canvas")
         .constructor<>()
         .constructor<SkScalar,SkScalar>()
@@ -1433,6 +1558,10 @@ EMSCRIPTEN_BINDINGS(Skia) {
         .function("setSubpixel", &SkFont::setSubpixel)
         .function("setTypeface", &SkFont::setTypeface, allow_raw_pointers());
 
+    gSkFontMgr_DefaultFactory = []() -> sk_sp<SkFontMgr> {
+        return sk_make_sp<SkMyFontMgr>();
+    };
+    
     class_<SkFontMgr>("FontMgr")
         .smart_ptr<sk_sp<SkFontMgr>>("sk_sp<FontMgr>")
         .class_function("_fromData", optional_override([](WASMPointerU32 dPtr,
