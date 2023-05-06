@@ -14,4 +14,9 @@ CanvasKit._extraInitializations.push(function() {
     }
     return pic;
   };
+
+  CanvasKit.SVGCanvas.Make = function(bounds, wstream, flags) {
+    var bPtr = copyRectToWasm(bounds);
+    return CanvasKit.SVGCanvas._make(bPtr, wstream, flags);
+  };
 });
