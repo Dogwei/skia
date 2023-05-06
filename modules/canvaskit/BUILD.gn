@@ -73,6 +73,16 @@ component("debugger") {
   ]
 }
 
+
+component("svg_canvas") {
+  include_dirs = [ "../.." ]
+  sources = [
+    "../../src/xml/SkXMLWriter.cpp",
+    "../../src/svg/SkSVGDevice.cpp",
+    "../../src/svg/SkSVGCanvas.cpp",
+  ]
+}
+
 action("create_notomono_cpp") {
   script = "../../tools/embed_resources.py"
 
@@ -119,6 +129,8 @@ skia_wasm_lib("canvaskit") {
   if (skia_canvaskit_enable_embedded_font) {
     deps += [ ":create_notomono_cpp" ]
   }
+
+  deps += [ ":svg_canvas" ]
 
   sources = [
     "WasmCommon.h",
